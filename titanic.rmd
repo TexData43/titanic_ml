@@ -1,0 +1,257 @@
+---
+title: "Titanic"
+author: "Tom"
+date: "January 15, 2018"
+output: html_document
+---
+# 1 Summary
+
+The following dataset from kaggle.com contains records about the individuals who died or survived in the Titanic disaster and has classically been used as an introduction to machine learning. The prediction will be did a person survive (1) or die (0) during the Titanic disaster, where this binary classification can be performed via Logistic Regression, Random Forest, or Support Vector Machines. We are working with the data inside R using a `project`.
+
+```{r}
+library(tidyverse)    # ggplot, dplyr
+library(randomForest) # prediction
+library(mice)         # imputation for missing data
+library(readr)        # import data in cleaner way
+library(stringr)      # work with strings
+library(magrittr)     # for the pipes
+library(caret)        # logistic regression
+```
+
+## 1.1 Load data and take a look
+
+`Readr` is a great package that has better options for importing data in various forms. It clearly tells you how various columns were imported. The `dplyr::glimpse` function is a combo of str() and head() simultaneously, which saves room and gives a very descriptive look at the first few rows of our dataset.
+
+```{r}
+training <- read_csv("train.csv")
+training <- training %>% 
+  mutate(set = "Training")
+
+testing <- read_csv("test.csv")
+testing <- testing %>% 
+  mutate(set = "Testing")
+
+full_set <- bind_rows(training, testing)
+
+glimpse(full_set)
+```
+
+
+## 1.2 Feature engineering family size
+
+We can assign a family-size variable to each passenger based on how many parents/children/etc. We can call a quick base-R histogram to see the general range we are working with following this conversion.
+
+```{r, eval = F}
+# Call a quick histogram to see the range we are dealing with
+hist(full_set$SibSp + full_set$Parch + 1)
+
+```
+
+In this graph, the red groups indicate those who died. We can see that there is an increased incidence of death in single individuals, while families of 2, 3, and 4 have a slight increase in survival. At family sizes of 5 and beyond we see decreased survival. This allows us another option to break family size from a continuous variable into a factor.
+
+```{r}
+# Create a new column (family_size) and assign a factor based on size
+# we choose single == 1, >1 & <=4 as small, and > 4 as large
+full_set <- full_set %>% 
+  mutate(family_size = SibSp + Parch + 1)
+
+ggplot(data = filter(full_set, !is.na(Survived))) + 
+  geom_bar(aes(x = family_size, fill = factor(Survived)), position = "dodge") +
+  scale_x_continuous(breaks = c(1:11))
+
+```
+
+We create 3 levels of our family unit: `Single` individuals, `Small` families (4 people, eg 2 parents, 2 children), and `Large` families (5 or more family members).  Although we could create a for loop at each of our breaks, the cut() function when done correctly is much faster and requires less hard coding. Importantly we can see that again our `Single` and `Large` groups have a lower survival ratio than the `Small` family group. Although we have altered our representation of our feature, we have mainatained the initial relationship.
+
+```{r}
+full_set <- full_set %>% mutate(family_size = cut(family_size, breaks = c(0, 1, 4, Inf), 
+                           labels = c('Single', 'Small', 'Large')))
+
+ggplot(data = filter(full_set, !is.na(Survived))) + 
+  geom_bar(aes(x = family_size, fill = factor(Survived)), position = "dodge") 
+
+
+```
+
+
+
+## Histogram Exploratory Data Analysis
+
+We plot our numeric/factor variables in histograms or bar charts to see the distributions of those who survived or died as a general estimate of which factors might be interesting later on.
+
+```{r}
+ggplot(data = filter(full_set, !is.na(Survived))) + 
+  geom_bar(aes(x = Survived, fill = factor(Survived)), stat = "count") + 
+  labs(title = "Raw count of those who died or survived")
+```
+
+Hmm, looks like males died at a much higher rate than females.
+
+```{r}
+ggplot(data = filter(full_set, !is.na(Survived)), 
+       aes(x = Sex, fill = factor(Survived))) + 
+  geom_bar(stat = "count") + 
+  labs(title = "Count of Male or Female passenger survivors\n")
+```
+Although there were pretty similar trends across the board for age, it looks like children aged 5 or younger survived at a much higher rate than other groups. We can look into cutting age into a factor as well to get some descriptive statistics.
+ 
+```{r}
+ggplot(data = filter(full_set, !is.na(Survived))) + 
+  geom_histogram(aes(x = Age, fill = factor(Survived)), binwidth = 2) + 
+  labs(title = "Histogram of Age of Passengers") +
+  scale_x_continuous(breaks = seq(0, 80, by = 10))
+```
+There is a pretty large spike in deaths around the $10-20 fare range. We could take a closer look into this data, but given that it is fully continuous I want to look at the cabin class (factor) data first!
+```{r}
+ggplot(data = filter(full_set, !is.na(Survived))) + 
+  geom_histogram(aes(x = Fare, fill = factor(Survived)), binwidth = 5) + 
+  labs(title = "Histogram of Fares for passengers")
+```
+# 3 Missing values
+
+Four of our variables have missing data (cabin, age, fare, embarked), which we need to impute. Although we might be able to impute the floor of the ship for cabin, finding the exact room is highly suspect and we are missing over 1000 of our 1300 data points. We will therefore focus on Age, Fare, and Embarked location. We are missing only 1 Fare and 2 Embarked locations, so let's use some logical imputation.
+
+```{r}
+# how many missing data points are there?
+map_df(full_set, function(x) {sum(is.na(x))})
+```
+
+## 3.1 Imputation of Fare and Embarked
+
+Passenger 1044 is missing. THis is Mr. Thomas Storey, a single 60 year old male departing from South Hampton with a 3rd class ticket.
+```{r}
+full_set %>% filter(is.na(Fare))
+```
+We can calculate the mean (shown in green) and median (shown in red) of passengers departing from the same location with the same ticket class. Importantly, I think it best to use the median, as it is not as sensitive to high or low values skew.
+
+```{r}
+full_set %>% 
+  filter(Embarked == "S" & Pclass == "3") %>% 
+  group_by(Embarked, Pclass) %>% 
+  summarize(med = median(Fare, na.rm = T), 
+            mean = mean(Fare, na.rm = T))
+
+ggplot(data = filter(full_set, Embarked == "S" & Pclass == "3")) + 
+  geom_histogram(aes(x = Fare), alpha = 0.4, fill = "blue", binwidth = 1) +  
+  geom_vline(aes(xintercept = median(Fare, na.rm = T)), size = 1, color = "red", linetype = "dashed") +
+  geom_vline(aes(xintercept = mean(Fare, na.rm = T)), size = 1, color = "green", linetype = "dotted", label = "Mean")
+
+```
+```{r}
+# replace the missing fare value
+full_set$Fare[1044] <- median(full_set[full_set$Pclass == '3' & full_set$Embarked == 'S', ]$Fare, na.rm = TRUE)
+full_set[1044,c(1,4,10)]
+
+
+## replace the missing embarked
+full_set$Embarked[c(62, 830)] <- 'C'
+```
+
+
+
+
+Individuals in the 3rd class cabins died at a much higher rate than those from 1st or 2nd class cabins. We can also see that the fare price is arond $13.70 for 3rd class cabins, and this corresponds to our spike in the previous graph. Rather than making a categorical variable out of fares, we could just use passenger class.  
+
+
+```{r}
+ggplot(data = filter(full_set, !is.na(Survived))) + geom_histogram(aes(x = Pclass, fill = factor(Survived)), stat = "count")
+
+filter(full_set, !is.na(Survived)) %>% group_by(Pclass) %>% summarize(mean_fare = mean(Fare), std_error_fare = sd(Fare)/sqrt(n()))
+```
+
+```{r}
+# Make variables factors into factors
+factor_vars <- c('PassengerId','Pclass','Sex','Embarked',
+                 'family_size')
+
+full_set[factor_vars] <- lapply(full_set[factor_vars], function(x) as.factor(x))
+
+# Set a random seed
+set.seed(129)
+
+# Perform mice imputation, excluding certain less-than-useful variables:
+mice_mod <- mice(full_set[, !names(full_set) %in% c('PassengerId','Name','Ticket','Cabin','Survived')], method='rf') 
+mice_output <- complete(mice_mod)
+```
+
+```{r}
+par(mfrow=c(1,2))
+hist(full_set$Age, freq=F, main='Age: Original Data', 
+  col='darkgreen', ylim=c(0,0.04))
+hist(mice_output$Age, freq=F, main='Age: MICE Output', 
+  col='lightgreen', ylim=c(0,0.04))
+```
+
+```{r}
+full_set$Age <- mice_output$Age
+sum(is.na(full_set$Age))
+```
+```{r}
+full_set <- full_set %>% 
+  mutate(child = cut(Age, breaks = c(0, 18, Inf), 
+                           labels = c('Child', 'Adult')))
+```
+
+```{r}
+training <- filter(full_set, set == "Training")
+testing <- filter(full_set, set == "Testing")
+```
+
+```{r}
+set.seed(37)
+
+rf_model <- randomForest(factor(Survived) ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked + family_size + child, data = training)
+```
+
+```{r}
+plot(rf_model, ylim = c(0, 0.36))
+```
+```{r}
+importance <- importance(rf_model)
+
+varImportance <- data.frame(Variables = row.names(importance),
+                           Importance = round(importance[ ,'MeanDecreaseGini'], 2))
+
+# Create a rank variable based on importance
+rankImportance <- varImportance %>%
+  mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+
+# Use ggplot2 to visualize the relative importance of variables
+ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+    y = Importance, fill = Importance)) +
+  geom_bar(stat='identity') + 
+  geom_text(aes(x = Variables, y = 0.5, label = Rank),
+    hjust=0, vjust=0.55, size = 4, colour = 'red') +
+  labs(x = 'Variables') +
+  coord_flip() + 
+  theme_minimal()
+```
+
+
+```{r}
+# Predict using the test set
+prediction <- predict(rf_model, testing)
+
+# Save the solution to a dataframe with two columns: PassengerId and Survived (prediction)
+solution <- data.frame(PassengerID = test$PassengerId, Survived = prediction)
+
+
+solution
+# Write the solution to file
+write.csv(solution, file = 'rf_mod_Solution.csv', row.names = F)
+```
+```{r}
+mod1 <- train(factor(Survived) ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked + family_size + child, 
+              data = training, method = "glm", family = "binomial")
+
+pred_log <- predict(mod1, newdata = testing)
+pred_log
+varImp(mod1)
+accuracy_log <- table(pred_log, testing[,"Survived"])
+solution_logistic <- data.frame(PassengerID = test$PassengerId, Survived = pred_log)
+
+solution_logistic
+write.csv(solution_logistic, file = 'log_mod_Solution.csv', row.names = F)
+
+```
+
