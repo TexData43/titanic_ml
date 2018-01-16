@@ -4,7 +4,7 @@ author: "Tom"
 date: "January 15, 2018"
 output: html_document
 ---
-# 1 Summary
+# Summary
 
 The following dataset from kaggle.com contains records about the individuals who died or survived in the Titanic disaster and has classically been used as an introduction to machine learning. The prediction will be did a person survive (1) or die (0) during the Titanic disaster, where this binary classification can be performed via Logistic Regression, Random Forest, or Support Vector Machines. We are working with the data inside R using a `project`.
 
@@ -159,6 +159,13 @@ ggplot(data = filter(full_set, !is.na(Survived))) + geom_histogram(aes(x = Pclas
 filter(full_set, !is.na(Survived)) %>% group_by(Pclass) %>% summarize(mean_fare = mean(Fare), std_error_fare = sd(Fare)/sqrt(n()))
 ```
 
+### 4 Modeling
+
+We will be using a Random forest and logistic regression to binary classify our passengers into `survived` or `did not survive`.
+
+
+#### 4.1 Random Forest 
+
 ```{r}
 # Make variables factors into factors
 factor_vars <- c('PassengerId','Pclass','Sex','Embarked',
@@ -197,15 +204,21 @@ training <- filter(full_set, set == "Training")
 testing <- filter(full_set, set == "Testing")
 ```
 
+Set a seed for reproducibility then call the random forest model with our features of interest.
+
 ```{r}
 set.seed(37)
 
 rf_model <- randomForest(factor(Survived) ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked + family_size + child, data = training)
 ```
+  
+Plot the random forest model performance.
 
 ```{r}
 plot(rf_model, ylim = c(0, 0.36))
 ```
+
+Calculate and plot the importance of our various features.
 ```{r}
 importance <- importance(rf_model)
 
@@ -227,6 +240,7 @@ ggplot(rankImportance, aes(x = reorder(Variables, Importance),
   theme_minimal()
 ```
 
+We can predict and create our solution for submission to Kaggle (~77% accuracy).
 
 ```{r}
 # Predict using the test set
@@ -236,10 +250,13 @@ prediction <- predict(rf_model, testing)
 solution <- data.frame(PassengerID = test$PassengerId, Survived = prediction)
 
 
-solution
+solution_rand_forest
 # Write the solution to file
 write.csv(solution, file = 'rf_mod_Solution.csv', row.names = F)
 ```
+
+#### 4.2 Logistic regression
+
 ```{r}
 mod1 <- train(factor(Survived) ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked + family_size + child, 
               data = training, method = "glm", family = "binomial")
@@ -254,4 +271,3 @@ solution_logistic
 write.csv(solution_logistic, file = 'log_mod_Solution.csv', row.names = F)
 
 ```
-
